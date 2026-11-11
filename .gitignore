@@ -15,7 +15,6 @@ renv/
 .Renviron
 vignettes/algorithm_cache
 .vscode/
-.claude/
 ..Rcheck/
 export/
 output/
