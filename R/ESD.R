@@ -815,7 +815,7 @@ writeEsdConceptCounts <- function(cdm, startDate, endDate, outputFolder) {
 # data.table::foverlaps which is O(N log N) versus the DB's nested-loop or
 # range-broadcast plans on tables with >10^7 rows.
 collectDomainForJoin <- function(domainDf, domainIdCol, domainDateCol, valueCol,
-                                 conceptIds, personIdsTbl, startDate, endDate) {
+                                 conceptIds, personIdsTbl, startDate, endDate, unitCol = NULL) {
   q <- domainDf %>%
     dplyr::filter(
       .data[[domainIdCol]] %in% .env$conceptIds,
@@ -823,6 +823,14 @@ collectDomainForJoin <- function(domainDf, domainIdCol, domainDateCol, valueCol,
       .data[[domainDateCol]] <= endDate
     ) %>%
     dplyr::semi_join(personIdsTbl, by = "person_id")
+  # [UiO patch] values recorded with unit day (8512) are converted to weeks (value / 7), as in initPregnancies()
+  if (!is.null(valueCol) && !is.null(unitCol)) {
+    q <- q %>% dplyr::mutate(r3_value_weeks = dplyr::case_when(
+      .data[[unitCol]] == 8512 ~ as.numeric(.data[[valueCol]]) / 7,
+      TRUE ~ as.numeric(.data[[valueCol]])
+    ))
+    valueCol <- "r3_value_weeks"
+  }
   if (is.null(valueCol)) {
     out <- q %>% dplyr::transmute(
       .data$person_id,
@@ -865,15 +873,38 @@ intervalJoinLocal <- function(domainDf, personIdListLocal) {
   dt_epi[, c("start_date", "merge_episode_end") := list(
     as.Date(start_date), as.Date(merge_episode_end)
   )]
+  # [UiO patch] foverlaps() stops when a window ends before it starts (or has a missing date). Such a window
+  # cannot contain any event, so dropping it gives the same result as the former SQL non-equi join.
+  dt_epi <- dt_epi[!is.na(start_date) & !is.na(merge_episode_end) & start_date <= merge_episode_end]
+  if (nrow(dt_epi) == 0L) return(emptyOut)
   data.table::setkey(dt_epi, person_id, start_date, merge_episode_end)
 
+  # [UiO patch, option] With options(PregnancyIdentifier.r3_ga_after_end_days = d), d > 0, records of gestational
+  # age at birth (4260747, 46234792) are also matched to an episode that ended up to d days before the record (the
+  # birth-registry record can lie after the first outcome record that ends the episode). Default 0: released behaviour.
+  afterEnd <- as.integer(getOption("PregnancyIdentifier.r3_ga_after_end_days", 0L))
+  gabIds <- c(4260747L, 46234792L)
+  isGab <- if (afterEnd > 0L) dt_dom$domain_concept_id %in% gabIds else rep(FALSE, nrow(dt_dom))
   joined <- data.table::foverlaps(
-    dt_dom,
+    dt_dom[!isGab],
     dt_epi,
     by.x = c("person_id", "domain_concept_start_date", ".ev_end"),
     by.y = c("person_id", "start_date", "merge_episode_end"),
     nomatch = NULL
   )
+  if (any(isGab)) {
+    dt_epi2 <- data.table::copy(dt_epi)[, .win_end := merge_episode_end + afterEnd]
+    data.table::setkey(dt_epi2, person_id, start_date, .win_end)
+    joined2 <- data.table::foverlaps(
+      dt_dom[isGab],
+      dt_epi2,
+      by.x = c("person_id", "domain_concept_start_date", ".ev_end"),
+      by.y = c("person_id", "start_date", ".win_end"),
+      nomatch = NULL
+    )
+    joined2[, .win_end := NULL]
+    joined <- data.table::rbindlist(list(joined, joined2), use.names = TRUE, fill = TRUE)
+  }
   joined[, .ev_end := NULL]
   joined[]
 }
@@ -969,7 +1000,8 @@ getTimingConcepts <- function(cdm,
   measDf <- withTiming("getTimingConcepts: pull measurement", logger, {
     df <- collectDomainForJoin(
       cdm$measurement, "measurement_concept_id", "measurement_date",
-      valueCol = "value_as_number", conceptIdsForFilter, personIdsTbl, startDate, endDate
+      valueCol = "value_as_number", conceptIdsForFilter, personIdsTbl, startDate, endDate,
+      unitCol = "unit_concept_id"                                   # [UiO patch]
     )
     df$value_col <- as.character(df$value_col)
     df
@@ -1039,7 +1071,10 @@ getTimingConcepts <- function(cdm,
       domain_value = stringr::str_replace(.data$domain_value, "Gestation period, ", ""),
       domain_value = stringr::str_replace(.data$domain_value, "gestation period, ", ""),
       domain_value = stringr::str_replace(.data$domain_value, " weeks", ""),
-      domain_value = as.integer(as.numeric(.data$domain_value))
+      # [UiO patch] the numeric value is kept, so weeks converted from days (value / 7) keep their exact days;
+      # for whole weeks (all values before the patch on this CDM) the result is the same as before
+      domain_value_num = as.numeric(.data$domain_value),
+      domain_value = as.integer(.data$domain_value_num)
     ) %>%
     dplyr::mutate(
       keep_value = dplyr::if_else(
@@ -1049,12 +1084,12 @@ getTimingConcepts <- function(cdm,
             .data$domain_concept_id %in% .env$gestationalAgeConceptIds |
             .data$domain_concept_id %in% .env$gestationAtBirthConceptIds
         ) &
-          (.data$domain_value <= 44 & .data$domain_value > 0),
+          (.data$domain_value_num <= 44 & .data$domain_value_num > 0),
         1, 0
       ),
       extrapolated_preg_start = dplyr::if_else(
         .data$keep_value == 1,
-        .data$domain_concept_start_date - (.data$domain_value * 7),
+        .data$domain_concept_start_date - round(.data$domain_value_num * 7),
         lubridate::NA_Date_
       )
     ) %>%

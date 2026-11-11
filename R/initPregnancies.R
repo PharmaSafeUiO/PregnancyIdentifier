@@ -134,7 +134,12 @@ initPregnancies <- function(cdm,
   # Single pipeline to preg_hip_records (no staging table) so prefixed write-schema works on all DBs
   cdm$preg_hip_records <- purrr::pmap(hipSpecs, function(tbl, conceptCol, dateCol, valueCol) {
     extra <- if (!is.na(valueCol)) {
-      list(value_as_number = rlang::expr(as.numeric(!!rlang::sym(valueCol))))
+      # [UiO patch] gestational age is used as weeks downstream; a value recorded with unit day (8512) is divided
+      # by 7 (as the OMOP pregnancy algorithm reads it). Values without that unit are unchanged.
+      list(value_as_number = rlang::expr(dplyr::case_when(
+        unit_concept_id == 8512 ~ as.numeric(!!rlang::sym(valueCol)) / 7,
+        TRUE ~ as.numeric(!!rlang::sym(valueCol))
+      )))
     } else {
       list(value_as_number = rlang::expr(as.numeric(NA)))
     }

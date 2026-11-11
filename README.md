@@ -3,6 +3,10 @@
 
 # PregnancyIdentifier
 
+> **This fork:** release `v3.3.2-uiopatched` (package version 3.3.2.1) is PregnancyIdentifier 3.3.2 with three
+> changes used for the Norwegian linked health registries in the OMOP CDM (`UIO_PATCH.md`). Release `v3.3.2` is
+> the unchanged version 3.3.2 (darwin-eu/PregnancyIdentifier, commit 8e54d94).
+
 <!-- badges: start -->
 
 [![Tests

@@ -1,3 +1,11 @@
+# PregnancyIdentifier 3.3.2.1 (3.3.2-uiopatched)
+
+* Gestational age recorded with unit day (8512) is read as days (version 3.3.2 read every value as weeks).
+* Episode windows that end before they start are removed before `foverlaps()` (the run stopped).
+* Option `PregnancyIdentifier.r3_ga_after_end_days` (default 0): records of gestational age at birth can be
+  matched up to d days after the end of an episode.
+* Details: `UIO_PATCH.md`.
+
 # PregnancyIdentifier 3.3.2
 
 ## Bug fixes
